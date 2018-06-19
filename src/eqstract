@@ -1,0 +1,493 @@
+#!/usr/bin/python
+
+import sys
+import os
+import getopt
+import pygtk
+import gtk
+import subprocess
+import pickle
+import PyPDF2
+import ConfigParser
+
+class App:
+    """
+    Application base class.
+    """
+    
+    app_name = 'eqstract'
+    app_version = '0.0.1'
+    cli_name = 'eqstract'
+    author_name = 'Johannes Marbach'
+    author_mail = '<johannesmarbach@gmail.com>'
+    
+    # Defaults
+    prototype_file = 'prototype.tex'
+    tmp_dir = 'tmp'
+    out_dir = 'out'
+    export_format = 'png'
+    font_size = 12
+    
+    # Valid export formats
+    valid_export_formats = ['jpg', 'png']
+    
+    # Keys used to save the user input
+    SAVE_KEY_ENVIRONMENTS = 'environments'
+    SAVE_KEY_CODE = 'code'
+    
+    def parse_cli(self):
+        """
+        Parses commandline arguments.
+        """
+        
+        try:
+            opts, args = getopt.getopt(
+                sys.argv[1:],
+                'h',
+                ['help',]
+            )
+        except getopt.GetoptError, err:
+            print str(err)
+            sys.exit(1)
+        
+        for opt, arg in opts:
+            if opt in ('-h', '--help'):
+                self.print_usage()
+                sys.exit(0)
+    
+    def print_usage(self):
+        """
+        Outputs usage information.
+        """
+        
+        print 'Usage: %s [OPTIONS] FILES|DIRECTORIES' % self.cli_name
+        print
+        print 'Options:'
+        print '  -h, --help           display this help and exit'
+        print
+    
+    def print_info(self):
+        """
+        Outputs application information.
+        """
+        
+        print self.app_name, self.app_version
+        print
+        print 'Written by %s' % self.author_name
+        print
+        print 'Report bugs to %s' % self.author_mail
+    
+    def __init__(self):
+        """
+        Constructor.
+        """
+        
+        # Initial setup
+        self.parse_cli()
+        
+        # Load configuration from file
+        self.config = ConfigParser.RawConfigParser()
+        self.config_path = self.get_absolute_path_in_base_dir('%s.conf' % self.cli_name)
+        self.load_config()
+        
+        # Load prototype
+        fp = open(self.get_absolute_path_in_base_dir(self.prototype_file), 'r')
+        self.prototype = fp.read()
+        fp.close()
+        
+        # Get absolute paths to TMP and OUT dir
+        self.tmp = self.get_absolute_path_in_base_dir(self.tmp_dir)
+        self.out = self.get_absolute_path_in_base_dir(self.out_dir)
+
+        # Ensure TMP and OUT dir exist
+        if not os.path.exists(self.tmp):
+            os.makedirs(self.tmp)
+        if not os.path.exists(self.out):
+            os.makedirs(self.out)
+        
+        # Load main window's UI from file
+        builder = gtk.Builder()
+        builder.add_from_file(self.get_absolute_path_in_base_dir('glade/main_window.glade'))
+        builder.connect_signals(self)
+        
+        # Extract objects
+        self.window = builder.get_object('window')
+        self.environment_entry = builder.get_object('environment_entry')
+        self.code_textview = builder.get_object('code_textview')
+        self.error_console_frame = builder.get_object('error_console_frame')
+        self.error_console_textview = builder.get_object('error_console_textview')
+        self.statusbar = builder.get_object('statusbar')
+        
+        # Show everything
+        self.window.show_all()
+    
+    def main(self):
+        """
+        Gtk main function.
+        """
+        
+        gtk.main()
+    
+    def destroy(self):
+        """
+        Destructor.
+        """
+        
+        gtk.main_quit()
+    
+    def get_absolute_path_in_base_dir(self, relative_path):
+        """
+        Converts the specified relative path within the application's base
+        directory to an absolute path.
+        """
+        
+        return os.path.abspath(os.path.join(os.path.dirname(sys.argv[0]), relative_path))
+    
+    def load_config(self):
+        """
+        Loads the configuration from file.
+        """
+        
+        if os.path.isfile(self.config_path): # Configuration file exists
+            # Parse configuration file
+            self.config.read(self.config_path)
+            
+            # Extract settings
+            self.export_format = self.config.get('Output Options', 'export format')
+            self.font_size = self.config.getint('Output Options', 'font size')
+        else: # Configuration file doesn't exists
+            # Add default sections
+            self.config.add_section('Output Options')
+            
+            # Save current (default) configuration to file
+            self.save_config()
+    
+    def save_config(self):
+        """
+        Saves the current configuration to file.
+        """
+        
+        # Query the current configuration
+        self.config.set('Output Options', 'export format', self.export_format)
+        self.config.set('Output Options', 'font size', '%i' % self.font_size)
+        
+        # Save configuration to file
+        fp = open(self.config_path, 'w')
+        self.config.write(fp)
+        fp.close()
+    
+    def query_user_input(self):
+        """
+        Queries and preprocesses the current user input.
+        """
+        
+        # Query environments
+        environments = [item.strip() for item in self.environment_entry.get_text().split(',')]
+        
+        # Query LATEX code
+        buffer = self.code_textview.get_buffer()
+        code = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter())
+        
+        return environments, code
+    
+    def insert_user_input(self, environments, code):
+        """
+        Inserts the specified data into the UI.
+        """
+        
+        # Inserty environments
+        environments_string = environments
+        if type(environments) != type(str()):
+            environments_string = ','.join(environments)
+        self.environment_entry.set_text(environments_string)
+        
+        # Insert LATEX code
+        self.code_textview.get_buffer().set_text(code)
+    
+    def set_filter_on_file_chooser_dialog(self, dialog):
+        """
+        Sets the appropriate filter on the specified file chooser dialog.
+        """
+        
+        filter = gtk.FileFilter()
+        filter.set_name('%s files' % self.app_name)
+        filter.add_pattern('*.%s' % self.cli_name)
+        dialog.add_filter(filter)
+        
+    def save(self):
+        """
+        Saves the current user input to file.
+        """
+        
+        # Prepare dialog
+        dialog = gtk.FileChooserDialog('Save', self.window, gtk.FILE_CHOOSER_ACTION_SAVE,
+            (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_SAVE, gtk.RESPONSE_OK))
+        self.set_filter_on_file_chooser_dialog(dialog)
+        
+        # Run dialog and process response
+        response = dialog.run()
+        if response == gtk.RESPONSE_OK:
+            # Process path
+            filename = dialog.get_filename()
+            if not filename.endswith('.%s' % self.cli_name):
+                filename = '%s.%s' % (filename, self.cli_name)
+            
+            # Prepare data
+            environments, code = self.query_user_input()
+            data = {
+                self.SAVE_KEY_ENVIRONMENTS: environments,
+                self.SAVE_KEY_CODE: code
+            }
+            
+            # Save data to file
+            fp = open(filename, 'w')
+            pickle.dump(data, fp, -1)
+            fp.close()
+        
+        dialog.destroy()
+    
+    def open(self):
+        """
+        Opens a previously saved file and inserts the contained user input.
+        """
+        
+        # Prepare dialog
+        dialog = gtk.FileChooserDialog('Load', self.window, gtk.FILE_CHOOSER_ACTION_OPEN,
+            (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_OPEN, gtk.RESPONSE_OK))
+        self.set_filter_on_file_chooser_dialog(dialog)
+        
+        # Add file filter
+        filter = gtk.FileFilter()
+        filter.set_name('%s files' % self.app_name)
+        filter.add_pattern('*.%s' % self.cli_name)
+        dialog.add_filter(filter)
+        
+        # Run dialog and process response
+        response = dialog.run()
+        if response == gtk.RESPONSE_OK:
+            # Load data from file
+            fp = open(dialog.get_filename(), 'r')
+            data = pickle.load(fp)
+            fp.close()
+            
+            # Extract & insert data
+            self.insert_user_input(
+                data[self.SAVE_KEY_ENVIRONMENTS],
+                data[self.SAVE_KEY_CODE]
+            )
+        
+        dialog.destroy()
+    
+    def extract(self):
+        """
+        Compile TEX file and extract environments.
+        """
+        
+        # Empty error console
+        self.error_console_textview.get_buffer().set_text('')
+        
+        # Update statusbar
+        context_id = self.statusbar.get_context_id('processor')
+        self.statusbar.push(context_id, 'Processing ...')
+        
+        # Iterate over pending events (necessary to force UI updates)
+        while gtk.events_pending():
+            gtk.main_iteration(False)
+        
+        # Query user input
+        environments, code = self.query_user_input()
+        
+        # Reset error console
+        self.error_console_textview.get_buffer().set_text('')
+        
+        # Build & compile TEX file
+        err = False
+        for environment in environments:
+            # Create temporary TEX file
+            fp = open(os.path.join(self.tmp, '%s.tex' % environment), 'w')
+            fp.write(self.prototype.
+                replace('#FONTSIZE#', '%ipt' % self.font_size).
+                replace('#ENVIRONMENT#', environment).
+                replace('#CODE#', code))
+            fp.close()
+            
+            # Compile TEX file
+            pdflatex = subprocess.Popen('pdflatex -interaction=nonstopmode \'%s.tex\'' % environment, bufsize = -1,
+                stdout = subprocess.PIPE, stderr = subprocess.STDOUT, shell = True, cwd = self.tmp)
+            out, _ = pdflatex.communicate()
+            
+            # Check return code
+            if pdflatex.returncode:
+                self.error_console_textview.get_buffer().set_text(out)
+                err = True
+            
+            if not err:
+                # Crop PDF
+                if os.path.isfile(os.path.join(self.tmp, '%s.pdf' % environment)):
+                    pdfcrop = subprocess.Popen('pdfcrop \'%s.pdf\' \'%s.pdf\'' % (environment, environment),
+                        bufsize = -1, stdout = subprocess.PIPE, stderr = subprocess.STDOUT,
+                        shell = True, cwd = self.tmp)
+                    out, _ = pdfcrop.communicate()
+                    
+                    # Check return code
+                    if pdfcrop.returncode:
+                        self.error_console_textview.get_buffer().set_text(out)
+                        err = True
+                    
+                    if not err:
+                        # Split PDF and convert pages to images
+                        ifp = open(os.path.join(self.tmp, '%s.pdf' % environment), 'rb')
+                        reader = PyPDF2.PdfFileReader(ifp)
+                        
+                        for i in range(reader.getNumPages()):
+                            # Get page
+                            page = reader.getPage(i)
+                            writer = PyPDF2.PdfFileWriter()
+                            writer.addPage(page)
+                            
+                            # Save page as PDF
+                            ofp = open(os.path.join(self.tmp, '%s-%i.pdf' % (environment, i)), 'wb')
+                            writer.write(ofp)
+                            ofp.close()
+                            
+                            # Convert PDF to image
+                            im = subprocess.Popen('convert \'%s-%i.pdf\' \'%s\'' % (environment, i,
+                                os.path.join(self.out, '%s-%i.%s' % (environment, i, self.export_format))),
+                                bufsize = -1, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, shell = True, cwd = self.tmp)
+                            out, _ = im.communicate()
+                            
+                            # Check return code
+                            if im.returncode:
+                                self.error_console_textview.get_buffer().set_text(out)
+                                err = True
+                        
+                        ifp.close()
+            
+            # Remove temporary files
+            for _, _, files in os.walk(self.tmp):
+                for file in files:
+                    if file.startswith(environment) and not file.endswith('.%s' % self.export_format):
+                        os.remove(os.path.join(self.tmp, file))
+            
+            if err:
+                break
+        
+        # Update statusbar
+        self.statusbar.pop(context_id)
+    
+    def load_preferences_dialog(self):
+        """
+        Loads and handles the preferences dialog.
+        """
+        
+        # Load dialog's from file
+        builder = gtk.Builder()
+        builder.add_from_file(self.get_absolute_path_in_base_dir('glade/preferences_dialog.glade'))
+        builder.connect_signals(self)
+        
+        # Extract objects
+        dialog = builder.get_object('dialog')
+        export_format_combobox = builder.get_object('export_format_combobox')
+        export_format_liststore = builder.get_object('export_format_liststore')
+        font_size_spinbutton = builder.get_object('font_size_spinbutton')
+        
+        # Setup image extension combobox
+        for i in range(len(self.valid_export_formats)):
+            export_format_liststore.append((self.valid_export_formats[i],))
+        
+        # Insert current settings
+        export_format_combobox.set_active(self.valid_export_formats.index(self.export_format))
+        font_size_spinbutton.set_value(float(self.font_size))
+        
+        # Run dialog and process response
+        response = dialog.run()
+        if response == 1: # Ok
+            # Query new settings
+            self.export_format = self.valid_export_formats[export_format_combobox.get_active()]
+            self.font_size = font_size_spinbutton.get_value()
+            
+            # Save settings to file
+            self.save_config()
+        
+        dialog.destroy()
+    
+    def window_delete_event_cb(self, widget, data = None):
+        """
+        Callback for destroy events of the main window.
+        """
+        
+        self.destroy()
+    
+    def open_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for open menu item clicks.
+        """
+        
+        self.open()
+    
+    def save_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for save menu item clicks.
+        """
+        
+        self.save()
+    
+    def quit_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for quit menu item clicks.
+        """
+        
+        self.destroy()
+    
+    def extract_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for convert menu item clicks.
+        """
+        
+        self.extract()
+    
+    def preferences_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for preferences menu item clicks.
+        """
+        
+        self.load_preferences_dialog()
+    
+    def about_menuitem_activate_cb(self, widget, data = None):
+        """
+        Callback for about menu item clicks.
+        """
+        
+        pass
+    
+    def open_toolbutton_clicked_cb(self, widget, data = None):
+        """
+        Callback for open toolbutton clicks.
+        """
+        
+        self.open()
+    
+    def save_toolbutton_clicked_cb(self, widget, data = None):
+        """
+        Callback for save toolbutton clicks.
+        """
+        
+        self.save()
+    
+    def extract_toolbutton_clicked_cb(self, widget, data = None):
+        """
+        Callback for convert toolbutton clicks.
+        """
+        
+        self.extract()
+    
+    def preferences_toolbutton_clicked_cb(self, widget, data = None):
+        """
+        Callback for preferences toolbutton clicks.
+        """
+        
+        self.load_preferences_dialog()
+
+if __name__ == '__main__':
+    app = App()
+    app.main()
