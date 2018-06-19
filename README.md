@@ -32,3 +32,11 @@ Using the tool or menu bar, the current input can also be saved to a `.eqstract`
 later reuse.
 
 If needed, the LaTeX template can be tweaked in `src/prototype.tex`.
+
+### Screenshots
+
+![Main window](screenshots/main-window.png)
+
+![Preferences](screenshots/preferences.png)
+
+![Output](screenshots/output.png)
