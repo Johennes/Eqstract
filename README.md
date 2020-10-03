@@ -1,7 +1,7 @@
 Eqstract
 ========
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+*Mirrors: [GitHub] ~ [GitLab]*
 
 A graphical application for converting LaTeX equations into bitmap images. Currently
 PNG and JPG are supported.
@@ -40,3 +40,6 @@ If needed, the LaTeX template can be tweaked in `src/prototype.tex`.
 ![Preferences](screenshots/preferences.png)
 
 ![Output](screenshots/output.png)
+
+[GitHub]: https://github.com/Johennes/Eqstract
+[GitLab]: https://gitlab.com/cherrypicker/Eqstract
